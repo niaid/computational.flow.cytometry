@@ -1,0 +1,196 @@
+# Install required packages in installation.R (uncomment line below if need to install)
+# source("installation.R")
+
+## Load required packages
+library(flowCore)
+library(ggcyto)
+library(flowAI)
+library(openCyto)
+library(tidyverse)
+library(magrittr)
+
+# Load Bcells tutorial dataset and save as object fs short for flowset
+data("Bcells")
+fs <- Bcells
+
+# The flowset object consists of individual flow frames
+# The fs object we are working with has 3 such flow frames in it
+fs
+
+# Indexing into the flowset is similar to working with lists or vectors in R
+# Here we identify the first flow frame in this flowset and save it as an R object
+ff <- fs[[1]]
+
+# Lets briefly explore the data
+# Each flow frame has the same columns (corresponding to a channel on the flow cytometer that collected the data)
+# Each channels has a range of values
+flowCore::summary(fs)
+
+# This function also works on individual flow frames
+flowCore::summary(ff)
+
+# Now that we know some of the parameters from the experiment, let's see how to index further
+# We'll also use piping in R which can help make complicated workflows easier
+
+fs[, "Time"] %>%
+flowCore::summary() # Here we pull data on only the time channel 
+
+fs[2:3, "FSC-A"] %>%
+flowCore::summary() # Here we pull data on only the FSC-A channel for samples 2 and 3
+
+# You can also find more information about the FCS file header
+# This function can be used with individual flow frames for more details
+keyword(ff)
+
+# Reading and writing fcs files
+# Lets save our flowset
+# We can provide the directory name of bcells
+# And save in our current working directory
+write.flowSet(x = fs, outdir = "bcells")
+
+# Now let's read in the data to a new flowset
+# We'll set the path as our previous saved folder
+# We'll look for files ending in .fcs
+# We'll load in without any transformation
+fs_read <- read.flowSet(path = "bcells", pattern = ".fcs", transformation = F, truncate_max_range = F)
+
+# Get high level information about the channels
+# We look at the parameters data from the first flow frame
+channel_metadata <- fs[[1]]@parameters@data
+View(channel_metadata)
+
+# You can also get just the color channels using markernames function
+# It only finds channels with the desc filled in (often what we care about but not always!)
+markers_of_interest <- markernames(fs)
+
+markers_of_interest
+
+# Data Quality Control
+# It's important to run a QC algorithm
+# To Remove any events that are low quality
+# For example, sudden changes in the flow cytometer performance
+# Such as clogging, detector spikes, etc.
+
+help("flow_auto_qc") # flowAI can be used for traditional flow cytometry data
+
+flow_auto_qc(fcsfiles = fs, output = 2, folder_results = "resultsQC")
+
+list.files("resultsQC") # QC fcs files and a .txt report
+
+read_delim(file = "resultsQC/QCmini.txt") %>% View()
+
+fs_qc <- read.flowSet(path = "resultsQC", pattern = ".fcs")
+
+fs[[1]]
+fs_qc[[1]] # the QC algorithm has added a marker of the low quality events
+
+autoplot(fs_qc[[1]])
+
+# Let's filter out the poor quality events above 10000
+qcGate <- rectangleGate(filterId = "highQuality","remove_from_all" = c(-Inf, 10000))
+qc_filt <- flowCore::filter(x = fs_qc, qcGate)
+fs_qc_filt <- flowCore::Subset(x = fs_qc, subset = qc_filt)
+
+autoplot(fs_qc_filt[[1]]) # Only events under 10k remain in the remove_from_all channel
+
+# Compensation
+# For situations where the overlap of the fluorochromes occurs,
+# It is important to run compensation
+# If available, you may find the compensation matrix directly
+# IN the file using the keywords
+comp <- keyword(fs_qc_filt[[1]])[["SPILL"]]
+comp # The matrix provides the information on how much signal to subtract out of one channel from another
+
+keyword(fs_qc_filt[[1]])[["APPLY COMPENSATION"]] # Compensation is already performed so we don't need to
+
+# The fsApply function can apply a flow cytometry function to
+# Each flow frame within a flow set
+# Let's decompensate the data
+# We'll compare the effect with the compensated data
+fs_qc_filt_decomp <- fsApply(fs_qc_filt, FUN = function(ff) decompensate(ff, comp))
+
+# We can use the ggcyto package to do ggplot2 type visualizations! :)
+# Here we compare a couple of channels with overlap from the compensation matrix with biological significance
+
+plot_comp <- ggcyto(fs_qc_filt[[1]], aes("Pacific", "655-A")) + geom_hex(bins = 512) + scale_x_flowjo_biexp() + scale_y_flowjo_biexp() + ggtitle("Compensated")
+plot_uncomp <- ggcyto(fs_qc_filt_decomp[[1]], aes("Pacific", "655-A")) + geom_hex(bins = 512) + scale_x_flowjo_biexp() + scale_y_flowjo_biexp() + ggtitle("Uncompensated")
+
+plot_uncomp
+plot_comp
+
+
+# Let's also remove any margin events (not always needed)
+# Depends upon experiment
+# We remove from scatter channels
+bf <- boundaryFilter(x = c("FSC-A", "SSC-A", "FSC-H", names(markers_of_interest)), filterId = "boundaryFilt")
+fs_qc_filt_margins <- flowCore::Subset(x = fs_qc_filt, subset = bf)
+
+
+# Data visualization
+# On the untransformed data, it is hard
+# To see differences across the color channels without transformation
+# Also note that the remove_from_all QC channel is limited to below 10000
+autoplot(fs_qc_filt_margins[[1]])
+
+# Gating
+# Let's use openCyto to perform
+# Some common gating steps
+gs <- GatingSet(fs_qc_filt_margins)
+
+# Logicle Transformation
+# Is one approach to allowing better
+# Visualization of the color channels
+trans <- logicle_trans()
+trans <- transformerList(from = names(markers_of_interest), trans = trans)
+
+gs <- transform(gs, trans)
+
+# Let's examine our cells by FSC and SSC
+ggcyto(data = gs, aes(`FSC-A`, `SSC-A`), subset = "root") + geom_hex(bins = 512)
+
+# We can gate out debris by a removal of events around ~1e05 SSC
+gs_add_gating_method(gs = gs, alias = "nonDebris", dims = "FSC-A", pop = "+",
+                     parent = "root", gating_method = "mindensity", gating_args = "peaks = c(0,1.25e05)")
+
+ggcyto(gs, aes("FSC-A", "SSC-A"), subset = "root") + geom_gate("nonDebris") + geom_hex(bins = 512) + geom_stats()
+
+gs_add_gating_method(gs, alias = "lymphocytes", pop = "+", parent = "nonDebris", dims = "FSC-A,SSC-A",
+                     gating_method = "flowClust.2d", gating_args = "K=2, target=c(1e05,5e04),quantile=0.95"
+                    )
+
+ggcyto(gs, aes("FSC-A", "SSC-A"), subset = "nonDebris") + geom_gate("lymphocytes") + geom_hex(bins = 512) + geom_stats()
+
+gs_add_gating_method(gs, alias = "singlets", pop = "+", parent = "lymphocytes", dims = "FSC-A,FSC-H",
+                     gating_method = "singletGate")
+
+ggcyto(gs, aes("FSC-A", "FSC-H"), subset = "lymphocytes") + geom_gate("singlets") + geom_hex(bins = 512) + geom_stats()
+
+ggcyto(gs, aes(x="CD19"), subset = "singlets") + geom_density()
+
+gs_add_gating_method(gs, alias = "bcells", pop = "+", parent = "singlets", dims = "CD19",
+                     gating_method = "mindensity")
+
+ggcyto(gs, aes("CD19"), subset = "singlets") + geom_gate("bcells") + geom_density() + geom_stats()
+
+# Now let's do some statistical analysis
+gs_stats <- gs_pop_get_count_fast(x = gs, type = "count")
+gs_stats <- left_join(gs_stats, gs_pop_get_count_fast(x = gs, statistic = "freq"))
+gs_stats <- dplyr::mutate(gs_stats, freq_of_parent = Count/ParentCount)
+
+pop.median <- function(fr){
+  chnls <- colnames(fr)
+  res <- matrixStats::colMedians(exprs(fr))
+  names(res) <- chnls
+  res
+}
+
+pop.mean <- function(fr){
+  chnls <- colnames(fr)
+  res <- matrixStats::colMeans2(exprs(fr))
+  names(res) <- chnls
+  res
+}
+
+gs_stats_mean <-  left_join(gs_stats, gs_pop_get_stats(x = gs, type = pop.mean) %>% dplyr::rename("name" = "sample", "Population" = "pop"))
+gs_stats_median <-  left_join(gs_stats, gs_pop_get_stats(x = gs, type = pop.median) %>% dplyr::rename("name" = "sample", "Population" = "pop"))
+
