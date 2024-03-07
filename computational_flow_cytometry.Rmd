@@ -195,7 +195,7 @@ bf <- boundaryFilter(x = c("FSC-A", "SSC-A", "FSC-H", names(markers_of_interest)
 fs_qc_filt_margins <- flowCore::Subset(x = fs_qc_filt, subset = bf)
 ```
 
-#### Data visualization
+#### Data visualization and Transformation
 
 On the untransformed data, it is hard to see differences across the color channels without transformation. Also note that the remove_from_all QC channel is limited to below 10000.
 
@@ -203,12 +203,27 @@ On the untransformed data, it is hard to see differences across the color channe
 autoplot(fs_qc_filt_margins[[1]])
 ```
 
+Logicle Transformation is one approach to allowing better visualization of the color channels.
+
+```{r}
+trans <- logicle_trans()
+trans <- transformList(from = names(markers_of_interest), logicleTransform())
+
+fs_qc_filt_margins_trans <- transform(fs_qc_filt_margins, trans)
+```
+
+Now the plots for the color channels are transformed for visualization
+
+```{r}
+autoplot(fs_qc_filt_margins_trans[[1]])
+```
+
 ### Gating
 
 Let's use `openCyto` to perform some common gating steps in a more automated fashion.
 
 ```{r}
-gs <- GatingSet(fs_qc_filt_margins)
+gs <- GatingSet(fs_qc_filt_margins_trans)
 
 # Logicle Transformation
 # Is one approach to allowing better

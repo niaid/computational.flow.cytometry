@@ -132,18 +132,21 @@ fs_qc_filt_margins <- flowCore::Subset(x = fs_qc_filt, subset = bf)
 # Also note that the remove_from_all QC channel is limited to below 10000
 autoplot(fs_qc_filt_margins[[1]])
 
-# Gating
-# Let's use openCyto to perform
-# Some common gating steps
-gs <- GatingSet(fs_qc_filt_margins)
-
 # Logicle Transformation
 # Is one approach to allowing better
 # Visualization of the color channels
 trans <- logicle_trans()
-trans <- transformerList(from = names(markers_of_interest), trans = trans)
+trans <- transformList(from = names(markers_of_interest), logicleTransform())
 
-gs <- transform(gs, trans)
+fs_qc_filt_margins_trans <- transform(fs_qc_filt_margins, trans)
+
+# Now the plots for the color channels are transformed for visualization
+autoplot(fs_qc_filt_margins_trans[[1]])
+
+# Gating
+# Let's use openCyto to perform
+# Some common gating steps
+gs <- GatingSet(fs_qc_filt_margins_trans)
 
 # Let's examine our cells by FSC and SSC
 ggcyto(data = gs, aes(`FSC-A`, `SSC-A`), subset = "root") + geom_hex(bins = 512)
